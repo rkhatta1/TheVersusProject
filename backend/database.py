@@ -18,6 +18,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
+    # Create posts table for Instagram content
     cur.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id SERIAL PRIMARY KEY,
@@ -25,6 +26,18 @@ def init_db():
             username VARCHAR(255) NOT NULL,
             caption TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL
+        );
+    """)
+    # Create articles table for RSS feed content
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS articles (
+            id SERIAL PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            headline TEXT NOT NULL,
+            source_name VARCHAR(255) NOT NULL,
+            summary TEXT,
+            published_at TIMESTAMP WITH TIME ZONE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT (now() at time zone 'utc')
         );
     """)
     conn.commit()
@@ -46,6 +59,26 @@ def add_post(post_id, username, caption, timestamp):
     cur.execute(
         "INSERT INTO posts (post_id, username, caption, timestamp) VALUES (%s, %s, %s, %s)",
         (post_id, username, caption, timestamp)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def article_exists(url):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM articles WHERE url = %s", (url,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return exists
+
+def add_article(url, headline, source_name, summary, published_at):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO articles (url, headline, source_name, summary, published_at) VALUES (%s, %s, %s, %s, %s)",
+        (url, headline, source_name, summary, published_at)
     )
     conn.commit()
     cur.close()
