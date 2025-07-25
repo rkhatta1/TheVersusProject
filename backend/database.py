@@ -40,6 +40,17 @@ def init_db():
             created_at TIMESTAMP WITH TIME ZONE DEFAULT (now() at time zone 'utc')
         );
     """)
+    # Create captions table for saved, stylized captions
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS captions (
+            id SERIAL PRIMARY KEY,
+            headline TEXT UNIQUE NOT NULL,
+            summary TEXT NOT NULL,
+            source_caption TEXT NOT NULL,
+            versus_caption TEXT NOT NULL,
+            saved_at TIMESTAMP WITH TIME ZONE DEFAULT (now() at time zone 'utc')
+        );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -83,3 +94,23 @@ def add_article(url, headline, source_name, summary, published_at):
     conn.commit()
     cur.close()
     conn.close()
+
+def save_caption(headline, summary, source_caption, versus_caption):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO captions (headline, summary, source_caption, versus_caption) VALUES (%s, %s, %s, %s)",
+        (headline, summary, source_caption, versus_caption)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def get_saved_captions():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT headline, summary, source_caption, versus_caption, saved_at FROM captions ORDER BY saved_at DESC")
+    captions = cur.fetchall()
+    cur.close()
+    conn.close()
+    return captions

@@ -2,6 +2,7 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 from dateutil.parser import parse as parse_date
+from datetime import datetime, timedelta, timezone
 from database import article_exists, add_article
 
 def parse_rss(xml_content):
@@ -27,12 +28,16 @@ def parse_rss(xml_content):
         print(f"🔴 ERROR: Failed to parse RSS XML: {e}")
     return articles
 
-def fetch_and_store_articles():
+def fetch_and_store_articles(time_limit_hours=None):
     """Fetches RSS feed, parses it, and stores new articles in the database."""
     rss_url = os.environ.get("RSS_FEED")
     if not rss_url:
         print("🔴 ERROR: RSS_FEED URL not set in .env file.")
         return []
+
+    min_timestamp = None
+    if time_limit_hours:
+        min_timestamp = datetime.now(timezone.utc) - timedelta(hours=int(time_limit_hours))
 
     try:
         print("Fetching articles from RSS feed...")
@@ -46,6 +51,16 @@ def fetch_and_store_articles():
     new_article_captions = []
 
     for article in articles:
+        # Ensure published_at is timezone-aware for comparison
+        if article['published_at'].tzinfo is None:
+            article['published_at'] = article['published_at'].replace(tzinfo=timezone.utc)
+
+        
+
+        if min_timestamp and article['published_at'] < min_timestamp:
+            print(f"Skipping old RSS article: {article['headline']}. Timestamp: {article['published_at']}")
+            continue
+
         if not article_exists(article['url']):
             print(f"Found new article: {article['headline']}")
             add_article(
