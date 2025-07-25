@@ -28,7 +28,7 @@ def parse_rss(xml_content):
         print(f"🔴 ERROR: Failed to parse RSS XML: {e}")
     return articles
 
-def fetch_and_store_articles(time_limit_hours=None):
+def fetch_and_store_articles(user_id, time_limit_hours=None):
     """Fetches RSS feed, parses it, and stores new articles in the database."""
     rss_url = os.environ.get("RSS_FEED")
     if not rss_url:
@@ -55,16 +55,15 @@ def fetch_and_store_articles(time_limit_hours=None):
         if article['published_at'].tzinfo is None:
             article['published_at'] = article['published_at'].replace(tzinfo=timezone.utc)
 
-        
-
         if min_timestamp and article['published_at'] < min_timestamp:
             print(f"Skipping old RSS article: {article['headline']}. Timestamp: {article['published_at']}")
             continue
 
-        if not article_exists(article['url']):
+        if not article_exists(article['url'], user_id):
             print(f"Found new article: {article['headline']}")
             add_article(
                 article['url'],
+                user_id,
                 article['headline'],
                 article['source_name'],
                 article['summary'],

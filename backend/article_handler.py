@@ -11,7 +11,7 @@ from newspaper import Article
 try:
     gemini_api_key = os.environ["GEMINI"]
     genai.configure(api_key=gemini_api_key)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 except KeyError:
     print("🔴 ERROR: GEMINI_API_KEY not found for article_handler.")
     gemini_model = None
@@ -31,13 +31,13 @@ Here is the article content:
 ---
 """
 
-def process_single_url(url):
+def process_single_url(url, user_id):
     """Fetches, processes, and stores a single article from a URL."""
     if not gemini_model:
         return {"error": "Gemini API not configured."}
 
-    # 1. Check if the article already exists
-    if article_exists(url):
+    # 1. Check if the article already exists for this user
+    if article_exists(url, user_id):
         return {"message": "This article has already been processed."}
 
     # 2. Fetch and extract article content
@@ -85,12 +85,13 @@ def process_single_url(url):
         source_name = urlparse(url).netloc
         add_article(
             url=url,
+            user_id=user_id,
             headline=news_item['headline'],
             source_name=source_name,
             summary=news_item['summary'],
             published_at=datetime.now(timezone.utc)
         )
-        print(f"✅ Successfully processed and stored article from {url}")
+        print(f"✅ Successfully processed and stored article from {url} for user {user_id}")
     except Exception as e:
         print(f"🔴 ERROR saving article to database: {e}")
         # Don't block the user, just log the error and return the content

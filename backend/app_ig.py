@@ -7,13 +7,22 @@ from datetime import datetime, timedelta, timezone
 import google.generativeai as genai
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
-from database import init_db, post_exists, add_post, save_caption, get_saved_captions
+from database import init_db, post_exists, add_post, save_caption, get_saved_captions, add_user, get_user_by_username
 from rss_handler import fetch_and_store_articles
-from article_handler import process_single_url # Import the new article handler
+from article_handler import process_single_url
+from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_jwt_identity
+from flask_bcrypt import Bcrypt
 
 # --- Initialization ---
 load_dotenv()
 app = Flask(__name__)
+
+# JWT Configuration
+app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "super-secret-jwt-key") # Change this in production!
+print(f"DEBUG: JWT_SECRET_KEY loaded: {app.config["JWT_SECRET_KEY"]}") # Debug print
+app.config["JWT_ERROR_MESSAGE_KEY"] = "message" # Return error messages in 'message' field
+jwt = JWTManager(app)
+bcrypt = Bcrypt(app)
 
 # Global flag for halting processes
 HALT_PROCESS = False
@@ -105,7 +114,7 @@ Here is the latest content:
 """
 
 # --- Core Logic ---
-def fetch_latest_insta_posts(time_limit_hours=None):
+def fetch_latest_insta_posts(user_id, time_limit_hours=None):
     """Fetches the latest post captions from our list of journalists and logs them."""
     global HALT_PROCESS
     all_captions = []
@@ -134,8 +143,8 @@ def fetch_latest_insta_posts(time_limit_hours=None):
                     continue
 
                 post_id = str(media.pk)
-                if media.caption_text and not post_exists(post_id):
-                    add_post(post_id, username, media.caption_text, media.taken_at)
+                if media.caption_text and not post_exists(post_id, user_id):
+                    add_post(post_id, user_id, username, media.caption_text, media.taken_at)
                     all_captions.append(f"- @{username}: {media.caption_text}\n")
                 elif media.caption_text:
                     print(f"Skipping post {post_id} from @{username} as it already exists in the database.")
@@ -149,10 +158,53 @@ def fetch_latest_insta_posts(time_limit_hours=None):
         return f"Error: {e}"
 
 # --- API Routes ---
+@app.route('/api/register', methods=['POST'])
+def register():
+    username = request.json.get('username', None)
+    password = request.json.get('password', None)
+
+    if not username or not password:
+        return jsonify({"msg": "Username and password are required"}), 400
+
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    user_id = add_user(username, hashed_password)
+
+    if user_id is None:
+        return jsonify({"msg": "Username already exists"}), 409
+
+    return jsonify({"msg": "User created successfully", "user_id": user_id}), 201
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    username = request.json.get('username', None)
+    password = request.json.get('password', None)
+
+    user = get_user_by_username(username)
+
+    if not user or not bcrypt.check_password_hash(user[2], password):
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    access_token = create_access_token(identity=str(user[0])) # user[0] is the user_id, cast to string
+    return jsonify(access_token=access_token), 200
+
+# JWT Error Handlers
+@jwt.unauthorized_loader
+def unauthorized_response(callback):
+    print(f"JWT Unauthorized Error: {callback}")
+    return jsonify({'message': callback}), 401
+
+@jwt.invalid_token_loader
+def invalid_token_response(callback):
+    print(f"JWT Invalid Token Error: {callback}")
+    return jsonify({'message': callback}), 422
+
 @app.route('/api/breaking-news', methods=['GET'])
+@jwt_required()
 def get_breaking_news():
     global HALT_PROCESS
     HALT_PROCESS = False # Reset halt flag at the start of a new request
+
+    current_user_id = get_jwt_identity()
 
     inference_url = os.environ.get("KAGGLE_INFERENCE_URL")
     if not inference_url:
@@ -167,18 +219,19 @@ def get_breaking_news():
         cached_time = datetime.fromisoformat(cached_data['timestamp'])
         # Check if cache is still valid AND if time_limit matches
         if cached_time > datetime.now(timezone.utc) - timedelta(minutes=CACHE_DURATION_MINUTES) and \
-           cached_data.get('time_limit') == time_limit_hours:
+           cached_data.get('time_limit') == time_limit_hours and \
+           cached_data.get('user_id') == current_user_id:
             print("✅ Serving response from cache.")
             return jsonify(cached_data)
 
     print("Cache stale or not found. Fetching new data...")
 
-    # 1. Fetch from all sources, passing the time_limit
-    insta_captions = fetch_latest_insta_posts(time_limit_hours)
+    # 1. Fetch from all sources, passing the time_limit and user_id
+    insta_captions = fetch_latest_insta_posts(current_user_id, time_limit_hours)
     if HALT_PROCESS:
         return jsonify({"message": "Process halted by user."}), 200
 
-    rss_captions = fetch_and_store_articles(time_limit_hours)
+    rss_captions = fetch_and_store_articles(current_user_id, time_limit_hours)
     if HALT_PROCESS:
         return jsonify({"message": "Process halted by user."}), 200
     
@@ -224,7 +277,8 @@ def get_breaking_news():
     cache_content = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "posts": ranked_news,
-        "time_limit": time_limit_hours # Store time_limit in cache
+        "time_limit": time_limit_hours, # Store time_limit in cache
+        "user_id": current_user_id # Store user_id in cache
     }
     with open(CACHE_FILE, 'w') as f:
         json.dump(cache_content, f, indent=4)
@@ -233,13 +287,15 @@ def get_breaking_news():
     return jsonify(cache_content)
 
 @app.route('/api/process-url', methods=['POST'])
+@jwt_required()
 def process_url_endpoint():
+    current_user_id = get_jwt_identity()
     data = request.get_json()
-    url = data.get('url')
+    url = data.get('url', None)
     if not url:
         return jsonify({"error": "URL is required."}), 400
 
-    result = process_single_url(url)
+    result = process_single_url(url, current_user_id)
 
     if "error" in result:
         return jsonify(result), 500
@@ -247,10 +303,13 @@ def process_url_endpoint():
     return jsonify(result)
 
 @app.route('/api/captions', methods=['POST'])
+@jwt_required()
 def save_caption_endpoint():
+    current_user_id = get_jwt_identity()
     data = request.get_json()
     try:
         save_caption(
+            user_id=current_user_id,
             headline=data['headline'],
             summary=data['summary'],
             source_caption=data['source_caption'],
@@ -264,9 +323,11 @@ def save_caption_endpoint():
         return jsonify({"error": f"Failed to save caption: {e}"}), 500
 
 @app.route('/api/captions', methods=['GET'])
+@jwt_required()
 def get_captions_endpoint():
+    current_user_id = get_jwt_identity()
     try:
-        captions = get_saved_captions()
+        captions = get_saved_captions(current_user_id)
         # Convert list of tuples to list of dicts for easier JSON serialization
         columns = ['headline', 'summary', 'source_caption', 'versus_caption', 'saved_at']
         result = [dict(zip(columns, row)) for row in captions]
@@ -275,6 +336,7 @@ def get_captions_endpoint():
         return jsonify({"error": f"Failed to retrieve captions: {e}"}), 500
 
 @app.route('/api/halt-loop', methods=['POST'])
+@jwt_required()
 def halt_loop():
     global HALT_PROCESS
     HALT_PROCESS = True
